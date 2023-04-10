@@ -1,0 +1,521 @@
+---
+title: "Exploring the Influence of Japanese Anime"
+author: "Raman Kadariya"
+subtitle: "SP23-MSBR-70310-02 Unstructured Data Analytics"
+output:
+  html_document:
+    highlight: pygments
+    theme: cerulean
+    toc: yes
+    toc_float: yes
+  html_notebook:
+    toc: yes
+    toc_float: yes
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, out.height = "\\textheight",  out.width = "\\textwidth",
+                      out.extra = "keepaspectratio=false")
+```
+
+```{r}
+rm(list=ls())
+```
+
+### Load the required packages
+```{r}
+library(rvest)
+library(dplyr)
+library(ggplot2)
+library(cluster)
+library(reshape2)
+library(ggdendro)
+library(tidyr)
+library(purrr)
+library(httr)
+library(jsonlite)
+```
+
+### API endpoint URL
+```{r}
+url <- "https://restcountries.com/v3.1/name/japan"
+```
+
+### Send GET request to the API endpoint
+```{r}
+response <- GET(url)
+```
+
+### Extract and parse the response content
+```{r}
+response_content <- content(response, "text")
+response_json <- jsonlite::fromJSON(response_content, simplifyDataFrame = TRUE)
+```
+
+### Extract the relevant columns into a new dataframe
+```{r}
+country_df <- data.frame(
+  Name = response_json$name$common,
+  Capital = ifelse(length(response_json$capital) > 0, response_json$capital[[1]], NA),
+  Population = response_json$population,
+  Region = response_json$region,
+  Subregion = response_json$subregion,
+  Languages = paste(response_json$languages, collapse = ", "),
+  Area = ifelse("area" %in% names(response_json), response_json$area, NA),
+  Currency = response_json$currencies$JPY$name
+)
+```
+
+### Print the resulting dataframe
+```{r}
+country_df
+```
+
+### Read the HTML content of the Wikipedia page
+```{r}
+manga_url <- "https://en.wikipedia.org/wiki/Manga"
+manga_html <- read_html(manga_url)
+```
+
+### Extract the headings and paragraphs
+```{r}
+section_headings <- manga_html %>% html_nodes("h2, h3") %>% html_text()
+section_paragraphs <- manga_html %>% html_nodes("h2, h3") %>% 
+  map(~html_text(html_nodes(.x, xpath = "following-sibling::p"))) %>% 
+  map_chr(~if(length(.x) > 0) paste(.x, collapse = "\n") else NA)
+```
+
+### Combine the headings and paragraphs into a data frame
+```{r}
+manga_data <- data.frame(Section = section_headings, Content = section_paragraphs)
+```
+
+### Clean the paragraphs
+```{r}
+manga_data$Content <- gsub("\\[[0-9]+\\]", "", manga_data$Content) ### Remove references/footnotes
+manga_data$Content <- gsub("[\r\n]+", " ", manga_data$Content) ### Remove newline characters
+manga_data$Content <- gsub("\\s+", " ", manga_data$Content) ### Remove excess whitespace
+manga_data$Content <- trimws(manga_data$Content) ### Trim leading/trailing whitespace
+```
+
+### Subset the data frame for desired sections
+```{r}
+selective_manga_sections <- c("History and characteristics", "International markets")
+subset_manga_data <- manga_data[manga_data$Section %in% selective_manga_sections, ]
+```
+
+### Print the cleaned data
+```{r}
+subset_manga_data
+```
+
+### Read the HTML content of the Wikipedia page
+```{r}
+anime_url <- "https://en.wikipedia.org/wiki/Anime"
+anime_html <- read_html(anime_url)
+```
+
+### Extract the headings and paragraphs
+```{r}
+section_headings <- anime_html %>% html_nodes("h2, h3") %>% html_text()
+section_paragraphs <- anime_html %>% html_nodes("h2, h3") %>% 
+  map(~html_text(html_nodes(.x, xpath = "following-sibling::p"))) %>% 
+  map_chr(~if(length(.x) > 0) paste(.x, collapse = "\n") else NA)
+```
+
+### Combine the headings and paragraphs into a data frame
+```{r}
+anime_data <- data.frame(Section = section_headings, Content = section_paragraphs)
+```
+
+### Clean the paragraphs
+```{r}
+anime_data$Content <- gsub("\\[[0-9]+\\]", "", anime_data$Content) ### Remove references/footnotes
+anime_data$Content <- gsub("[\r\n]+", " ", anime_data$Content) ### Remove newline characters
+anime_data$Content <- gsub("\\s+", " ", anime_data$Content) ### Remove excess whitespace
+anime_data$Content <- trimws(anime_data$Content) ### Trim leading/trailing whitespace
+```
+
+### Subset the data frame for desired sections
+```{r}
+selective_anime_sections <- c("History", "Modern era", "Globalization and cultural impact")
+subset_anime_data <- anime_data[anime_data$Section %in% selective_anime_sections, ]
+```
+
+### Print the cleaned data
+```{r}
+subset_anime_data
+```
+
+### Set the GraphQL query and any variables needed
+```{r}
+query <- '
+  query ($perPage: Int, $page: Int) {
+    Page (perPage: $perPage, page: $page) {
+      pageInfo {
+        total
+        perPage
+        currentPage
+        lastPage
+        hasNextPage
+      }
+      media (type: ANIME, sort: POPULARITY_DESC) {
+        id
+        title {
+          romaji
+          english
+        }
+        episodes
+        description
+      }
+    }
+  }
+'
+
+variables <- list(perPage = 100, page = 1)
+```
+
+### Set the POST request options
+```{r}
+url <- "https://graphql.anilist.co"
+body <- list(query = query, variables = variables)
+options <- list(content_type_json())
+```
+
+### Send the POST request
+```{r}
+response <- POST(url, body = body, encode = "json", verbose(), config = add_headers("Accept-Encoding"="gzip"), options = options)
+```
+
+### Extract the response content as text and parse it as JSON
+```{r}
+response_content <- content(response, "text")
+response_json <- jsonlite::fromJSON(response_content)
+```
+
+### Extract and print title and number of episodes for each anime
+```{r}
+anime_list <- response_json$data$Page$media
+
+for (anime in anime_list) {
+  paste("Title (romaji):", anime_list$id)
+  paste("Title (romaji):", anime_list$title$romaji)
+  paste("Title (english):", anime_list$title$english)
+  paste("Episodes:", anime_list$episodes)
+  paste("Description:", anime_list$description)
+  cat("\n")
+}
+```
+
+
+### Sort anime_list by ID in ascending order
+```{r}
+anime_list_sorted <- anime_list[order(anime_list$id), ]
+```
+
+### Print the dataframe
+```{r}
+print(head(anime_list_sorted, 3))
+```
+
+### Read in the HTML tables
+```{r}
+anime_tables <- read_html("https://en.wikipedia.org/wiki/List_of_highest-grossing_anime_films")
+anime_tables <- html_table(anime_tables)
+```
+
+### Keep only the relevant tables
+```{r}
+anime_tables <- anime_tables[1:3]
+names(anime_tables) <- c("highest_grossing_worldwide", "highest_grossing_japan", "japanese_films_by_admissions")
+```
+
+### Rename the columns for the japanese_films_by_admissions table
+```{r}
+colnames(anime_tables[["highest_grossing_worldwide"]]) <- c("Title", "Worldwide gross", "Year", "Format", "Ref.")
+colnames(anime_tables[["highest_grossing_japan"]]) <- c("Title", "Japan Gross", "Year", "Format", "Ref.")
+colnames(anime_tables[["japanese_films_by_admissions"]]) <- c("Year", "Title", "Rentals", "Gross receipts", "Admissions", "Ref.", "Format")
+```
+
+### Create data frames from the tables
+```{r}
+highest_grossing_worldwide_df <- as.data.frame(anime_tables[["highest_grossing_worldwide"]])
+highest_grossing_japan_df <- as.data.frame(anime_tables[["highest_grossing_japan"]])
+japanese_films_by_admissions_df <- as.data.frame(anime_tables[["japanese_films_by_admissions"]])
+```
+
+```{r}
+print(head(highest_grossing_worldwide_df, 3))
+```
+
+### Initialize an empty data frame to store the data
+```{r}
+anime_characters <- data.frame()
+```
+
+### Specify the base URL and the number of pages to iterate through
+```{r}
+base_url <- "https://anidb.net/character/?noalias=1&orderby.name=1.1&orderby.rating=0.2"
+num_pages <- 3000
+```
+
+### Loop through each page and extract the data
+```{r}
+for (page_num in 1:num_pages) {
+  # Construct the URL for the current page
+  page_url <- paste0(base_url, "&page=", page_num, "&view=list")
+  
+  # Read the HTML content from the URL
+  page_html <- read_html(page_url)
+  
+  # Extract the data we want and store it in a data frame
+  page_data <- page_html %>%
+    html_nodes("table") %>%
+    html_table() %>%
+    .[[1]]
+  
+  # Add a column to indicate the page number
+  page_data$page_num <- page_num
+  
+  # Combine the data frame for the current page with the previous data frames
+  anime_characters <- rbind(anime_characters, page_data)
+}
+```
+
+### Print the results
+```{r}
+print(results)
+```
+
+
+### Specify the base URL and the number of pages to iterate through into a dataframe
+```{r}
+base_url <- "https://anidb.net/character/?noalias=1&orderby.name=1.1&orderby.rating=0.2"
+num_pages <- 100
+anime_characters <- data.frame()
+```
+
+### Loop through each page and extract the data
+```{r}
+for (page_num in 1:num_pages) {
+  # Construct the URL for the current page
+  page_url <- paste0(base_url, "&page=", page_num, "&view=list")
+  
+  # Read the HTML content from the URL
+  page_html <- read_html(page_url)
+  
+  # Extract the data we want and store it in a data frame
+  page_data <- page_html %>%
+    html_nodes("table") %>%
+    html_table()
+  
+  # Check if a table was found
+  if (length(page_data) > 0) {
+    # Extract the first table from the list and store it in a data frame
+    page_data <- page_data[[1]]
+    
+    # Add a column to indicate the page number
+    page_data$page_num <- page_num
+    
+    # Combine the data frame for the current page with the previous data frames
+    anime_characters <- rbind(anime_characters, page_data)
+  }
+}
+```
+
+### Print column names
+```{r}
+colnames(anime_characters)
+```
+
+### Remove duplicates and missing values
+```{r}
+anime_characters <- unique(anime_characters)
+```
+
+### Convert Rating column to numeric
+```{r}
+anime_characters$Rating <- as.numeric(gsub("\\(.*?\\)", "", anime_characters$Rating))
+```
+
+### Convert Age column to numeric and replace missing values with median
+```{r}
+anime_characters$Age <- as.numeric(anime_characters$Age)
+median_age <- median(anime_characters$Age, na.rm = TRUE)
+anime_characters$Age[is.na(anime_characters$Age)] <- median_age
+```
+
+### Create density plot for gender identity and rating
+```{r}
+ggplot(anime_characters, aes(x = Rating, fill = `Gender Identity`)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Rating", fill = "Gender Identity") +
+  labs(fill = "Gender Identity", title = "Density Plot of Rating by Gender Identity") +
+  theme_classic() +
+  scale_fill_discrete(name = "Gender Identity") +
+  xlim(7.5, 10) +
+  ggtitle("Density Plot of Rating by Gender Identity") +
+  theme(plot.title = element_text(hjust = 0.5), legend.title = element_text(size = 12))
+```
+
+### Select variables for clustering
+```{r}
+anime_cluster <- anime_characters[,c("Rating", "Gender Identity", "Age")]
+```
+
+### Convert Gender Identity to numeric
+```{r}
+anime_cluster$`Gender Identity` <- ifelse(anime_cluster$`Gender Identity` == "male", 1, 2)
+anime_cluster$`Gender Identity` <- as.numeric(anime_cluster$`Gender Identity`)
+```
+
+### Normalize the data
+```{r}
+anime_cluster_norm <- scale(anime_cluster)
+```
+
+### Hierarchical clustering
+```{r}
+anime_cluster_hclust <- hclust(dist(anime_cluster_norm))
+```
+
+### Create a dendrogram using ggplot2
+```{r}
+ggdendrogram(anime_cluster_hclust, rotate = FALSE, theme_dendro = FALSE) +
+  labs(title = "Dendrogram of Anime Character Clustering", x = "Number of Observations in Cluster", y = "Cluster Height") +
+  theme(axis.text.x = element_text(size = 12), axis.text.y = element_text(size = 12))
+```
+
+### Silhouette analysis
+```{r}
+sil <- numeric(num_pages)
+for (k in 2:num_pages) {
+  anime_cluster_kmeans <- kmeans(anime_cluster_norm, centers = k, nstart = 25)
+  sil[k] <- mean(silhouette(anime_cluster_kmeans$cluster, dist(anime_cluster_norm)))
+}
+
+plot(2:num_pages, sil[2:num_pages], type = "b", xlab = "Number of Clusters", ylab = "Average Silhouette Coefficient", main = "Silhouette Analysis of Anime Character Clustering", cex.lab = 1.5, cex.main = 1.5, cex.axis = 1.2) +
+  abline(h = mean(sil), col = "red", lty = 2) +
+  geom_point(aes(x = which.max(sil), y = max(sil)), col = "blue", size = 4)
+
+summary(sil)
+```
+
+### K-means clustering
+```{r}
+anime_cluster_kmeans <- kmeans(anime_cluster_norm, centers = 4, nstart = 25)
+```
+
+### Add cluster information to the data frame
+```{r}
+anime_cluster$cluster <- as.factor(anime_cluster_kmeans$cluster)
+```
+
+### Generate table of counts by cluster and gender identity
+```{r}
+print(table(anime_cluster$cluster, anime_characters$`Gender Identity`))
+```
+
+### Generate table of counts by cluster and age
+```{r}
+print(table(anime_cluster$cluster, anime_characters$Age))
+```
+
+### Summarize data by cluster
+```{r}
+anime_cluster_summary <- anime_cluster %>%
+  group_by(cluster) %>%
+  summarize(mean_age = mean(Age),
+            mean_rating = mean(Rating))
+
+print(anime_cluster_summary)
+```
+
+### Bar chart of Gender Identity by cluster
+```{r}
+ggplot(anime_cluster, aes(x = factor(anime_cluster_kmeans$cluster), fill = factor(`Gender Identity`))) +
+  geom_bar(position = "dodge") +
+  labs(title = "Bar Chart of Gender Identity by Cluster (k = 4)", subtitle = "Based on Anime Character Ratings and Age", x = "Cluster", y = "Count of Characters", fill = "Gender Identity") +
+  scale_fill_brewer(palette = "Dark2") +
+  geom_text(stat='count', aes(label=..count..), position=position_dodge(0.9), vjust=-0.5, size = 3) +
+  theme_minimal() +
+  theme(legend.position="top", legend.direction="horizontal", legend.text = element_text(size = 12), axis.text.x = element_text(size = 12), axis.text.y = element_text(size = 12), plot.title = element_text(size = 18, face = "bold"), plot.subtitle = element_text(size = 16))
+```
+
+### Perform K-means clustering
+```{r}
+set.seed(1234)
+anime_cluster_kmeans <- kmeans(anime_cluster_norm, centers = 4)
+```
+
+### Check number of clusters
+```{r}
+nlevels(factor(anime_cluster_kmeans$cluster))
+```
+
+### Create scatterplot of Age and Rating by cluster
+```{r}
+ggplot(anime_cluster, aes(x = Age, y = Rating, color = factor(anime_cluster_kmeans$cluster))) +
+  geom_point(alpha = 0.5, size = 2) +
+  geom_smooth(method = "lm", se = FALSE, color = "black") +
+  labs(title = "Scatterplot of Age and Rating by Cluster", x = "Age", y = "Rating", color = "Cluster") +
+  scale_color_brewer(palette = "Set1") +
+  theme(legend.position = "right") +
+  xlim(0, 100) + ylim(7.5, 10)
+```
+
+### Order rows and columns by clustering results
+```{r}
+anime_cluster_ordered <- anime_cluster_norm[order(anime_cluster_kmeans$cluster), ]
+```
+
+### Create heatmap of normalized data by cluster
+```{r}
+ggplot(data = melt(anime_cluster_ordered), 
+       aes(x = Var2, y = Var1, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "red", 
+                       mid = "lightyellow", 
+                       high = "blue", 
+                       midpoint = 0, 
+                       na.value ="green",
+                       guide = "colourbar",
+                       aesthetics = "fill") +
+  labs(title = "Heatmap of Normalized Data by Cluster") +
+  theme_minimal()
+```
+
+### Summary statistics
+```{r}
+summary(anime_cluster)
+```
+
+### Count of observations by cluster
+```{r}
+table(anime_cluster$cluster)
+```
+
+### Mean rating by cluster
+```{r}
+aggregate(anime_cluster$Rating, by = list(anime_cluster$cluster), mean)
+```
+
+### Mean age by cluster
+```{r}
+aggregate(anime_cluster$Age, by = list(anime_cluster$cluster), mean)
+```
+
+### Mean rating by gender identity
+```{r}
+aggregate(anime_cluster$Rating, by = list(anime_cluster$`Gender Identity`), mean)
+```
+
+### Mean age by gender identity
+```{r}
+aggregate(anime_cluster$Age, by = list(anime_cluster$`Gender Identity`), mean)
+```
+
+
+
